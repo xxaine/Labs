@@ -1,0 +1,315 @@
+:figure-caption: Рисунок
+:table-caption: Таблица
+= Лабораторная работа №1 - Прерывание
+:toc:
+:toc-title: Оглавление:
+
+Чепульская О.С., Яковенко А.Д. КЭ-413 +
+
+=  *Введение* +
+
+*Прерывание* (исключение) - сигнал, сообщающий микропроцессору о наступлении какого-либо события от периферии. При этом
+выполнение текущей последовательности команд приостанавливается, и управление передаётся
+обработчик прерывания, который реагирует на событие и обслуживает его, после чего возвращает
+управление в прерванный код. +
+Прерывания могут быть:
+
+* *Маскируемые* (могут запрещаться или разрешаться).
+* *Немаскируемые* (не могут запрещаться) - например прерывание при переполнении стека.
+
+В зависимости от микроконтроллера прерывания могут иметь приоритеты
+или не иметь. Приоритеты могут обслуживаться как относительные и абсолютные. + 
+*Абсолютное обслуживание* прерываний означает, что если во время обработки
+прерывания поступает более приоритетное прерывание, то текущая процедура обработки прерывания вытесняется, и процессор начинает выполнять обработку вновь поступившего
+более приоритетного прерывания. + 
+После завершения этой процедуры процессор возвращается к выполнению вытесненной процедуры обработки прерывания. +
+
+*Вектор прерывания* - закреплённый за устройством номер, который идентифицирует соответствующий обработчик прерываний. Векторы прерываний объединяются в таблицу векторов прерываний, содержащую адреса обработчиков прерываний. +
+
+Управление и обработка прерываниями производится *контроллером приоритетных векторных прерываний* NVIC (Nested Vectored Interrupt Controller). Контроллер прерываний часть ядра Cortex-M.
+
+За работу прерываний отвечают несколько регистров: +
+
+* *ISR* - Interrupt Set Enable Register. Запись бита в нужную позицию включает прерывание записью 1.
+* *ISR* - Interrupt Clr Enable Register. Запись сюда наоборот выключает прерывание - записью 1.
+* *ISR* - Interrupt Set Pending Register. Поставить прерывание в ожидании записью 1.
+* *ISR* - Interrupt Clear Pending Register. Сбросить прерывание с ожидания.
+* *AVR* - Interrupt active bit registers. Регистр показывающий активно ли в данный момент прерывание. Автоматически ставится когда мы попадаем в обработчик и автоматом же снимается когда мы уходим из него. Этот регистр можно только читать.
+
+
+=  *Ход работы* +
+
+=== Разрешим глобальное прерывание таймера 2 +
+Установим прерывание раз в секунду
+
+[source, cpp]
+    // Настройка таймера 2
+    RCC::APB1ENR::TIM2EN::Enable::Set();
+    TIM2::PSC::Write(TimerPrescaller);
+    TIM2::ARR::Write(11000); //счёт до прерывания
+    TIM2::CNT::Write(0); //начало отсчёта от 0
+    NVIC::ISER0::Write(1<<28U); // разрешение глобальное прерывания вектора от TIM2
+    TIM2::DIER::UIE::Enable::Set();  // разрешение прерывания по переполнению таймера
+    GPIOA::MODER::MODER2::Alternate::Set();
+   
+
+Опишем обработчик прерывания таймера 2 в файле startup:
+ 
+
+[source, cpp]
+ InterruptHandler::Timer2Handler,         //TIM2 28 
+ 
+
+=== Разрешим глобальное прерывание таймера 3 +
+
+[source, cpp]
+    // Настройка таймера 3
+    RCC::APB1ENR::TIM3EN::Enable::Set();
+    TIM3::PSC::Write(TimerPrescaller);
+    TIM3::ARR::Write(500);
+    TIM3::CNT::Write(0);
+    NVIC::ISER0::Write(1<<29U);
+    TIM3::DIER::UIE::Enable::Set();
+ GPIOA::MODER::MODER3::Alternate::Set();
+
+=== Установим моргание светодиодов по прерыванию таймеров 2 и 3 +
+
+[source, cpp]
+static void DummyHandler() { for(;;) {} }
+    static void Timer2Handler()
+    {
+      if (TIM2::SR::UIF::UpdatePending::IsSet())
+      {
+        TIM2::SR::UIF::NoUpdate::Set();
+        GPIOC::ODR::Toggle(1 << 8) ;
+      }
+    }
+    static void Timer3Handler()
+    {
+      if (TIM3::SR::UIF::UpdatePending::IsSet())
+      {
+        TIM2::SR::UIF::NoUpdate::Set();
+        GPIOC::ODR::Toggle(1 << 5) ;
+      }
+    }
+
+
+
+= *Результат* 
+
+.Результат программы
+image::lab1-2022.gif[300,300]
+
+
+
+
+
+= *Схема в StarUML*
+
+Перед началом написания кода нам надо продумать архитектуру, которую мы будем воплащать. Для этого воспользуемся StarUML.
+
+.Архитектура и взаимодействие класса в StarUML.
+image::image.png[]
+
+
+= *Передача сообщений по USART через прерывание*
+Задача: передавать сообщение "Hello world". Нужно разрешить прерывание при передаче первой буквы и запретить его при передаче последней. Отправляя в регистор данных каждую последующую букву. +
+Перед тем как послать сообщение, строку нужно скопировать во внутренний буфер. Мы будем посылать из буфера только первый символ, а остальные через прерывание, вызывая OnByteTransmimit(). Передача длится пока строка не заполнится до нижного размера, тогда передача уже запрещается и её можно начать заного. +
+
+=== Создадим класс, который мы описали в StarUML.
+
+[source, cpp]
+#pragma once
+#include <string>  // for std::string
+#include <array>  // for std::array
+class MessageTransmitter
+{
+public:
+  static void Send(std::string& message); // Передача ссылки на строку
+  static void OnByteTransmimit();
+private:
+  inline static std::array<uint8_t, 255> buffer = {};
+  inline static size_t byteCounter = 0U;
+  inline static size_t messageLenght = 0U;
+};
+
+
+=== Реализация метода
+ 
+[source, cpp]
+#include "messagetransmitter.h"
+#include "usart2register.hpp"
+void MessageTransmitter::Send(const std::string& message) // Реализация метода Send
+{
+  //Скопировать строку в буфер
+  std::copy_n(message.begin()/ message.size(), buffer.begin());
+  byteCounter = 0;
+  USART2::DR:Write(buffer[byteCounter]); 
+  USART2::CR1::TE::Enable::Set(); //Разрешение передачи
+  USART2::CR1::TXEIE::Enable::Set(); //Разрешение прерывания по опустошении регистра передачи
+  byteCounter++;
+}
+void MessageTransmitter::OnByteTransmit() // Реализация метода OnByteTransmit
+{
+  if(byteCounter <= messageLenght) // Делаем прерывание каждый раз, когда выводим байт
+  {
+    USART2::DR:Write(buffer[byteCounter]); // Разрешаем записать следующий байт
+    byteCounter++;
+  }
+  else
+  {
+    USART2::CR1::TE::Disable::Set(); //Запрещаем передачу
+    USART2::CR1::TXEIE::Disable::Set(); //Запрещаем прерывание по опустошении регистра передачи
+  }
+}
+
+=== Устанавливаем в обработчик прерываний
+
+[source, cpp]
+class InterruptHandler {
+public:
+static void Usart2Handler()
+    {
+      if( USART2::SR::UIF::UpdatePending::Isset()) //Проверка флага по опустошению регистра передачи
+      {
+        MessageTransmitter::OnByteTransmit();  //Вызов функции OnByteTransmit()
+      }
+    }
+};
+
+Вставим обработчик прерываний в файле startup:
+ 
+
+[source, cpp]
+ InterruptHandler::Timer2Handler,  //37
+ InterruptHandler::Usart2Handler,  //USART2 38 
+ 
+
+= *Код программы*
+
+===  InterruptHandler
+
+[source, cpp]
+#ifndef REGISTERS_INTERRUPTHANDLER_HPP
+#define REGISTERS_INTERRUPTHANDLER_HPP
+#include "tim2registers.hpp"  //for TIM2
+#include "tim3registers.hpp"  //for TIM3
+#include "gpiocregisters.hpp"  //for TIM2
+#include "messagetransmitter.h"
+#include "usart2register.hpp"
+class InterruptHandler {
+  public:
+    static void DummyHandler() { for(;;) {} }
+    static void Timer2Handler()
+    {
+      if (TIM2::SR::UIF::UpdatePending::IsSet())
+      {
+        TIM2::SR::UIF::NoUpdate::Set();
+        GPIOC::ODR::Toggle(1 << 8) ;
+      }
+    }
+    static void Timer3Handler()
+    {
+      if (TIM3::SR::UIF::UpdatePending::IsSet())
+      {
+        TIM2::SR::UIF::NoUpdate::Set();
+        GPIOC::ODR::Toggle(1 << 5) ;
+      }
+    }
+    static void Usart2Handler()
+    {
+      if( USART2::SR::UIF::UpdatePending::Isset())
+      {
+        MessageTransmitter::OnByteTransmit();
+      }
+    }
+};
+#endif
+
+
+=== Main.cpp
+
+[source, cpp]
+#include "gpiocregisters.hpp" //for Gpioc
+#include "gpioaregisters.hpp"
+#include "rccregisters.hpp"   //for RCC
+#include "tim2registers.hpp"   //for TIM2
+#include "nvicregisters.hpp"  //for NVIC
+#include "tim3registers.hpp"  //for TIM3
+#include "usart2register.hpp"
+using namespace std ;
+constexpr auto SystemClock = 16'000'000U;
+constexpr auto TimerClock = 1'000U;
+constexpr auto TimerPrescaller = SystemClock/TimerClock;
+extern "C"
+{
+int __low_level_init(void)
+{
+    //Switch on external 16 MHz oscillator
+    RCC::CR::HSION::On::Set() ;
+    while (!RCC::CR::HSIRDY::Ready::IsSet())
+    {
+    }
+    //Switch system clock on external oscillator
+    RCC::CFGR::SW::Hsi::Set() ;
+    while (!RCC::CFGR::SWS::Hsi::IsSet())
+    {
+    }
+    RCC::AHB1ENR::GPIOAEN::Enable::Set(); 
+    RCC::AHB1ENR::GPIOCEN::Enable::Set(); 
+    GPIOC::MODER::MODER8::Output::Set();  
+    GPIOC::MODER::MODER5::Output::Set(); 
+    RCC::APB1ENR::TIM2EN::Enable::Set();
+    TIM2::PSC::Write(TimerPrescaller);
+    TIM2::ARR::Write(11000);
+    TIM2::CNT::Write(0);
+    NVIC::ISER0::Write(1<<28U);
+    TIM2::DIER::UIE::Enable::Set();
+    RCC::APB1ENR::TIM3EN::Enable::Set();
+    TIM3::PSC::Write(TimerPrescaller);
+    TIM3::ARR::Write(500);
+    TIM3::CNT::Write(0);
+    NVIC::ISER0::Write(1<<29U);
+    TIM3::DIER::UIE::Enable::Set();
+    //Порт А2 и А3 на альтернативный режим работы
+    GPIOA::MODER::MODER2::Alternate::Set();
+    GPIOA::MODER::MODER3::Alternate::Set();
+    //Назначение портов А2 и А3 на альтернативную функцию 7
+    GPIOA::AFRL::AFRL2::Af7::Set();  // USART2 Tx
+    GPIOA::AFRL::AFRL3::Af7::Set();  // USART2 Rx
+    //Подключаем USART2 к системе тактирования АРВ1
+    USART2::CR1::OVER8::OversamplingBy16::Set();
+    USART2::CR1::M::Data8bits::Set();
+    USART2::CR1::PCE::ParityControlDisable::Set();
+    USART2::BRR::Write(8'000'000/ 9600);
+    NVIC::ISER0::Write(1<<6U); // разрешение глобальное прерывания от USART2
+  return 1;
+}
+}
+void DelayMs (uint32_t value)
+{
+  const auto delay = TimerClock * value/ 1000U ;
+  TIM2::PSC::Write(TimerPrescaller);
+  TIM2::ARR::Write(11000);
+  TIM2::SR::UIF::NoUpdate::Set();
+  TIM2::CNT::Write(0U);
+  while(TIM2::SR::UIF::NoUpdate::IsSet())
+  {
+  }
+  TIM2::SR::UIF::NoUpdate::Set();
+  TIM2::CR1::CEN::Disable::Set();
+}
+int main()
+{
+  std::string testMessage = "Hello world";
+  for(;;)
+  {
+  MessageTransmitter::Send(TestMessage);
+  }
+  return 0 ;
+}
+
+
+
+
+
