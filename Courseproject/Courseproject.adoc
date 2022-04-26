@@ -1,4 +1,4 @@
-:imagesdir: Images
+:imagesdir: Image
 :figure-caption: Рисунок
 :table-caption: Таблица
 = Курсовой проект
